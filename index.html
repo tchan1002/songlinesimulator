@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Transform Chicago transit routes into multi-sensory artistic experiences. Generate unique audio compositions, visual timelines, and textile patterns from your journey.">
+    <meta name="keywords" content="Chicago, CTA, transit, songlines, generative art, audio visualization, web audio, route mapping">
+    <meta name="author" content="Chicago Songline Simulator">
+
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Chicago Songline Simulator">
+    <meta property="og:description" content="Transform your transit journey into audio-visual art. A collaborative human-machine creation.">
+    <meta property="og:url" content="">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Chicago Songline Simulator">
+    <meta name="twitter:description" content="Transform Chicago transit routes into multi-sensory artistic experiences.">
+
+    <title>Chicago Songline Simulator - Transform Transit Routes into Art</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Section: Input/Map (left) and Quilt (right) -->
+        <div class="top-section">
+            <!-- Left: Input + Map -->
+            <div class="left-panel">
+                <div class="input-section">
+                    <h1 class="app-title">Chicago Songline Simulator</h1>
+                    <p style="text-align: center; color: var(--text-secondary); font-size: 0.85rem; margin-top: -1rem; margin-bottom: 1.5rem; font-style: italic;">Inspired by Aboriginal songlines · Programmatic "art"?</p>
+
+                    <div class="form-group">
+                        <label for="origin">Origin</label>
+                        <input type="text" id="origin" placeholder="Enter starting address">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="destination">Destination</label>
+                        <input type="text" id="destination" placeholder="Enter destination address">
+                    </div>
+
+                    <div class="button-group">
+                        <button id="generate-btn" class="primary-btn">Generate</button>
+                        <button id="example-btn" class="secondary-btn">Example</button>
+                    </div>
+
+                    <div id="error-message" class="error-message" style="display: none;"></div>
+                    <div id="loading-message" class="loading-message" style="display: none;">Generating route...</div>
+                </div>
+
+                <div class="map-container">
+                    <div id="map-view">
+                        <div class="map-placeholder">
+                            <div class="placeholder-icon">🗺️</div>
+                            <p>Your transit route will appear here</p>
+                            <p class="api-key-status" id="api-key-status"></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Quilt Pattern -->
+            <div class="right-panel">
+                <div class="quilt-container">
+                    <h2 class="panel-title">Songline Pattern</h2>
+                    <div id="quilt-pattern">
+                        <div class="placeholder-icon">🎨</div>
+                        <p class="placeholder-text">Your songline will appear here</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Section: Song Line Timeline -->
+        <div class="bottom-section">
+            <div class="timeline-container">
+                <h2 class="panel-title">Song Line · Listen with Headphones for Directional Audio</h2>
+                <div id="sound-timeline">
+                    <p class="placeholder-text">Audio timeline will appear here after route generation<br><small style="opacity: 0.7; margin-top: 0.5rem; display: block;">🎧 Use headphones to experience directional panning (East/West) and pitch shifts (North/South)</small></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Explanation Section -->
+    <div class="explanation-section">
+        <div class="explanation-container">
+            <div class="explanation-columns">
+                <!-- Left Column: What is a Songline -->
+                <div class="explanation-column">
+                    <h2 class="explanation-title">What is an Aboriginal Songline?</h2>
+                    <div class="explanation-content">
+                        <p>
+                            Australian Museum: <em>"Songlines are the Aboriginal walking routes that crossed the country. They were created by ancestral spirits, and marked by sacred sites. Singing the 'songs' in the correct order enabled people to navigate vast distances."</em><sup>1</sup>
+                        </p>
+
+                        <p>
+                            Bruce Chatwin, <em>The Songlines</em>: <em>"Each totemic ancestor, while travelling through the country, was thought to have scattered a trail of words and musical notes along the line of his footprints... These Dreaming-tracks lay over the land as 'ways' of communication between the most far-flung tribes."</em><sup>2</sup>
+                        </p>
+
+                        <p>
+                            National Museum of Australia: <em>"A songline is a map of Country that is conveyed through songs, stories, dance and painting. For Aboriginal and Torres Strait Islander people, a songline is often connected to a Dreaming story and can traverse thousands of kilometres."</em><sup>3</sup>
+                        </p>
+
+                        <div class="explanation-highlight">
+                            <p style="font-size: 0.85rem; line-height: 1.6; margin: 0;">
+                                <strong>Sources:</strong><br>
+                                1. Australian Museum - Songlines<br>
+                                2. Bruce Chatwin, <em>The Songlines</em> (1987)<br>
+                                3. National Museum of Australia - Songlines and Country
+                            </p>
+                        </div>
+
+                        <p class="explanation-footer">
+                            This project reimagines transit routes as songlines—not claiming indigenous knowledge, but exploring how sound and direction can create richer connections to places.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Right Column: How Transit Becomes Sound -->
+                <div class="explanation-column">
+                    <h2 class="explanation-title">How the Encoding Works</h2>
+                    <div class="explanation-content">
+                        <p><strong>Each transit type gets its own sound:</strong></p>
+
+                        <div class="explanation-highlight">
+                            <ul style="list-style: none; padding-left: 0;">
+                                <li>🚌 <strong>Bus:</strong> Deep bass tone. Pitch = route number (e.g., #22 vs #77). Length = number of stops.</li>
+                                <li>🚇 <strong>Train:</strong> Rhythmic beat. Each CTA line (Red, Blue, etc.) has a set frequency.</li>
+                                <li>🚶 <strong>Walking:</strong> Fast percussive clicks, like footsteps.</li>
+                            </ul>
+                        </div>
+
+                        <p><strong>Direction is encoded in pitch and stereo panning:</strong></p>
+                        <ul>
+                            <li><strong>North/South:</strong> North = higher pitch, South = lower pitch</li>
+                            <li><strong>East/West:</strong> East = right ear, West = left ear</li>
+                        </ul>
+
+                        <p><strong>Example:</strong> If you're going east on the Blue Line, you hear a beat in your right ear. Turn north on a bus? The tone gets higher.</p>
+
+                        <p><strong>The visual pattern:</strong> Overlapping circles (each segment is a "site") with concentric rings showing stops. Connected by curved lines and dots, like traditional Aboriginal art. Color = transit mode, size = duration.</p>
+
+                        <p class="explanation-footer" style="font-size: 0.9rem;">
+                            Use headphones to hear the directional audio as you explore your route.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        GOOGLE MAPS API KEY SETUP:
+
+        LOCAL DEVELOPMENT:
+        1. Copy config.example.js to config.js
+        2. Add your API key to config.js
+        3. config.js is gitignored for security
+
+        PRODUCTION DEPLOYMENT:
+        1. Replace 'YOUR_API_KEY_HERE' below with your actual API key
+        2. Go to Google Cloud Console: https://console.cloud.google.com/
+        3. Enable APIs: Maps JavaScript API, Directions API
+        4. Restrict your key by domain (e.g., yourdomain.com)
+
+        For local development, the script.js will try to load from config.js first
+    -->
+    <script src="config.js"></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCBYlUVreh6HB_ZSqmndK-9PDHUx_o4BB4&libraries=places&callback=initApp" async defer></script>
+    <script src="script.js"></script>
+</body>
+</html>

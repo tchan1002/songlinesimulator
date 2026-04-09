@@ -1,0 +1,2276 @@
+/**
+ * Chicago Songline Simulator - Phase 1-2
+ * Google Maps Integration and Route Parsing
+ *
+ * This script handles:
+ * - Google Maps initialization
+ * - Transit directions requests (bus and rail)
+ * - Route segment parsing into structured data
+ * - Map visualization with colored polylines
+ *
+ * The parsed route data is stored in window.routeSegments for use by Phase 3-5
+ */
+
+// Global variables
+let map;
+let directionsService;
+let directionsRenderer;
+
+/**
+ * Global route segments array - used by Phase 3-5 agents
+ * Structure:
+ * {
+ *   mode: 'BUS' | 'RAIL' | 'WALKING' | 'DRIVING',
+ *   routeNumber: string,        // For buses (e.g., "22")
+ *   lineName: string,           // For trains (e.g., "Red Line")
+ *   lineColor: string,          // For trains (e.g., "#c60c30")
+ *   direction: string,          // Travel direction
+ *   stops: number,              // Number of stops
+ *   duration: number,           // Duration in seconds
+ *   distance: number,           // Distance in meters
+ *   polyline: string            // Encoded polyline for mapping
+ * }
+ */
+window.routeSegments = [];
+
+// Chicago CTA line colors for visualization
+const CTA_COLORS = {
+    'Red Line': '#c60c30',
+    'Blue Line': '#00a1de',
+    'Brown Line': '#62361b',
+    'Green Line': '#009b3a',
+    'Orange Line': '#f9461c',
+    'Purple Line': '#522398',
+    'Yellow Line': '#f9e300',
+    'Pink Line': '#e27ea6'
+};
+
+// Default colors for different transit modes
+const MODE_COLORS = {
+    'BUS': '#4285f4',
+    'RAIL': '#ea4335',
+    'WALKING': '#34a853',
+    'DRIVING': '#fbbc04'
+};
+
+/**
+ * Initialize Google Maps - callback for async API load
+ */
+window.initApp = function() {
+    console.log('🗺️  initApp callback triggered');
+    initMap();
+};
+
+/**
+ * Initialize Google Maps on page load
+ */
+function initMap() {
+    console.log('🗺️  Initializing Google Maps...');
+
+    // Center on Chicago
+    const chicago = { lat: 41.8781, lng: -87.6298 };
+
+    // Clear placeholder
+    const mapView = document.getElementById('map-view');
+    const placeholder = mapView.querySelector('.map-placeholder');
+    if (placeholder) {
+        console.log('✓ Removing map placeholder');
+        placeholder.remove();
+    }
+
+    // Create map
+    map = new google.maps.Map(document.getElementById('map-view'), {
+        zoom: 11,
+        center: chicago,
+        mapTypeControl: true,
+        streetViewControl: false,
+        fullscreenControl: true,
+        styles: [
+            {
+                featureType: 'poi',
+                elementType: 'labels',
+                stylers: [{ visibility: 'off' }]
+            }
+        ]
+    });
+
+    // Initialize directions service
+    directionsService = new google.maps.DirectionsService();
+
+    console.log('✅ Google Maps initialized - Chicago Songline Simulator ready');
+    updateAPIKeyStatus(true);
+}
+
+/**
+ * Request transit directions between two addresses
+ */
+function requestDirections(origin, destination) {
+    console.log('\n🚀 ========== ROUTE GENERATION STARTED ==========');
+    console.log('📍 Origin:', origin);
+    console.log('📍 Destination:', destination);
+
+    showLoading();
+    hideError();
+
+    // Clear previous outputs
+    clearOutputs();
+
+    const request = {
+        origin: origin,
+        destination: destination,
+        travelMode: google.maps.TravelMode.TRANSIT,
+        transitOptions: {
+            modes: [
+                google.maps.TransitMode.BUS,
+                google.maps.TransitMode.RAIL
+            ],
+            routingPreference: google.maps.TransitRoutePreference.FEWER_TRANSFERS
+        },
+        region: 'us',
+        unitSystem: google.maps.UnitSystem.IMPERIAL
+    };
+
+    console.log('📤 Sending request to Google Directions API...');
+    console.log('Request config:', request);
+
+    directionsService.route(request, (result, status) => {
+        console.log('📥 Directions API response received');
+        console.log('Status:', status);
+
+        hideLoading();
+
+        if (status === google.maps.DirectionsStatus.OK) {
+            console.log('✅ Directions request successful');
+            console.log('Raw result:', result);
+            handleDirectionsSuccess(result);
+        } else {
+            console.error('❌ Directions request failed');
+            console.error('Error status:', status);
+            handleDirectionsError(status);
+        }
+    });
+}
+
+/**
+ * Clear previous outputs before generating new route
+ */
+function clearOutputs() {
+    // Clear timeline
+    const timelineContainer = document.getElementById('sound-timeline');
+    if (timelineContainer) {
+        const canvas = timelineContainer.querySelector('#timeline-canvas');
+        const controls = timelineContainer.querySelector('#audio-controls-container');
+        if (canvas) canvas.remove();
+        if (controls) controls.remove();
+
+        // Reset placeholder
+        const placeholder = document.createElement('p');
+        placeholder.className = 'placeholder-text';
+        placeholder.textContent = 'Audio timeline will appear here after route generation';
+        timelineContainer.appendChild(placeholder);
+    }
+
+    // Clear quilt
+    const quiltContainer = document.getElementById('quilt-pattern');
+    if (quiltContainer) {
+        quiltContainer.innerHTML = '<div class="placeholder-icon">🎨</div><p class="placeholder-text">Your unique textile pattern will appear here</p>';
+    }
+
+    // Stop any playing audio (only if audio controls exist)
+    if (typeof stopAudio === 'function' && document.getElementById('play-btn')) {
+        stopAudio();
+    }
+}
+
+/**
+ * Handle successful directions response
+ */
+function handleDirectionsSuccess(result) {
+    console.log('Directions API Response:', result);
+
+    // Parse route into segments
+    const segments = parseRouteSegments(result);
+    window.routeSegments = segments;
+
+    console.log('Parsed Route Segments:', segments);
+    console.log(`Total segments: ${segments.length}`);
+
+    // Log summary
+    const summary = generateRouteSummary(segments);
+    console.log('Route Summary:', summary);
+
+    // Display route on map
+    displayRouteOnMap(result, segments);
+
+    // Render timeline visualization
+    renderTimeline(segments);
+
+    // Generate quilt pattern
+    generateQuilt(segments);
+
+    // Show success message
+    showSuccess(`Route generated: ${segments.length} segments, ${summary.totalDuration} minutes`);
+}
+
+/**
+ * Parse Google Directions result into structured route segments
+ */
+function parseRouteSegments(directionsResult) {
+    console.log('🔍 Parsing route segments...');
+
+    const segments = [];
+    const route = directionsResult.routes[0];
+    const legs = route.legs;
+
+    console.log(`Found ${legs.length} leg(s) in route`);
+
+    legs.forEach((leg, legIndex) => {
+        console.log(`\n--- Leg ${legIndex + 1}: ${leg.steps.length} steps ---`);
+
+        leg.steps.forEach((step, stepIndex) => {
+            console.log(`\nStep ${stepIndex + 1}:`, step.travel_mode);
+
+            const segment = {
+                mode: step.travel_mode,
+                routeNumber: null,
+                lineName: null,
+                lineColor: null,
+                direction: null,
+                stops: 0,
+                duration: step.duration.value, // seconds
+                distance: step.distance.value, // meters
+                polyline: step.polyline.points,
+                instructions: step.instructions
+            };
+
+            // Parse transit-specific details
+            if (step.travel_mode === 'TRANSIT' && step.transit) {
+                const transitDetails = step.transit;
+                const line = transitDetails.line;
+
+                console.log('  Transit details:', {
+                    vehicle: line.vehicle.type,
+                    name: line.name,
+                    short_name: line.short_name,
+                    color: line.color,
+                    stops: transitDetails.num_stops
+                });
+
+                // Determine if bus or rail
+                if (line.vehicle.type === 'BUS') {
+                    segment.mode = 'BUS';
+                    segment.routeNumber = line.short_name || line.name;
+                    console.log(`  ✓ Bus route: ${segment.routeNumber}`);
+                } else if (line.vehicle.type === 'SUBWAY' ||
+                           line.vehicle.type === 'HEAVY_RAIL' ||
+                           line.vehicle.type === 'COMMUTER_TRAIN') {
+                    segment.mode = 'RAIL';
+                    // Standardize line names
+                    segment.lineName = standardizeCTALineName(line.name);
+                    segment.lineColor = line.color ? `#${line.color}` : getCTALineColor(segment.lineName);
+                    console.log(`  ✓ Rail line: ${segment.lineName} (${segment.lineColor})`);
+                }
+
+                // Direction and stops
+                segment.direction = transitDetails.headsign || null;
+                segment.stops = transitDetails.num_stops || 0;
+
+                console.log(`  Direction: ${segment.direction}`);
+                console.log(`  Stops: ${segment.stops}`);
+
+                // Store departure and arrival info
+                segment.departure = {
+                    stop: transitDetails.departure_stop.name,
+                    time: transitDetails.departure_time.text
+                };
+                segment.arrival = {
+                    stop: transitDetails.arrival_stop.name,
+                    time: transitDetails.arrival_time.text
+                };
+
+                console.log(`  From: ${segment.departure.stop}`);
+                console.log(`  To: ${segment.arrival.stop}`);
+            } else if (step.travel_mode === 'WALKING') {
+                console.log(`  ✓ Walking: ${(step.distance.value * 0.000621371).toFixed(2)} miles`);
+            } else if (step.travel_mode === 'DRIVING') {
+                console.log(`  ✓ Driving: ${(step.distance.value * 0.000621371).toFixed(2)} miles`);
+            }
+
+            segments.push(segment);
+        });
+    });
+
+    return segments;
+}
+
+/**
+ * Get CTA line color by name
+ */
+/**
+ * Standardize CTA line names to match our color map
+ * Handles variations like "CTA Red Line", "Red", "red line" → "Red Line"
+ */
+function standardizeCTALineName(rawName) {
+    if (!rawName) return null;
+
+    const normalized = rawName.toLowerCase().trim();
+
+    // Remove "CTA" prefix if present
+    const cleanName = normalized.replace(/^cta\s+/, '');
+
+    // Map to standard names
+    const lineMap = {
+        'red': 'Red Line',
+        'blue': 'Blue Line',
+        'brown': 'Brown Line',
+        'green': 'Green Line',
+        'orange': 'Orange Line',
+        'purple': 'Purple Line',
+        'yellow': 'Yellow Line',
+        'pink': 'Pink Line'
+    };
+
+    // Check each color
+    for (const [color, standardName] of Object.entries(lineMap)) {
+        if (cleanName.includes(color)) {
+            console.log(`  📌 Standardized "${rawName}" → "${standardName}"`);
+            return standardName;
+        }
+    }
+
+    // If already in standard format
+    if (cleanName.endsWith(' line')) {
+        const capitalized = cleanName
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+        return capitalized;
+    }
+
+    console.warn(`  ⚠️  Could not standardize line name: "${rawName}"`);
+    return rawName; // Return as-is if we can't standardize
+}
+
+function getCTALineColor(lineName) {
+    if (!lineName) return null;
+
+    // Check direct match first
+    if (CTA_COLORS[lineName]) {
+        return CTA_COLORS[lineName];
+    }
+
+    // Check if line name matches known CTA lines
+    for (const [line, color] of Object.entries(CTA_COLORS)) {
+        if (lineName.toLowerCase().includes(line.toLowerCase().replace(' Line', ''))) {
+            return color;
+        }
+    }
+
+    console.warn(`  ⚠️  No color found for line: "${lineName}"`);
+    return null;
+}
+
+/**
+ * Generate route summary statistics
+ */
+function generateRouteSummary(segments) {
+    const summary = {
+        totalDuration: 0,
+        totalDistance: 0,
+        busSegments: 0,
+        railSegments: 0,
+        walkingSegments: 0,
+        totalStops: 0,
+        lines: []
+    };
+
+    segments.forEach(segment => {
+        summary.totalDuration += segment.duration;
+        summary.totalDistance += segment.distance;
+        summary.totalStops += segment.stops;
+
+        if (segment.mode === 'BUS') {
+            summary.busSegments++;
+            if (segment.routeNumber && !summary.lines.includes(segment.routeNumber)) {
+                summary.lines.push(`Bus ${segment.routeNumber}`);
+            }
+        } else if (segment.mode === 'RAIL') {
+            summary.railSegments++;
+            if (segment.lineName && !summary.lines.includes(segment.lineName)) {
+                summary.lines.push(segment.lineName);
+            }
+        } else if (segment.mode === 'WALKING') {
+            summary.walkingSegments++;
+        }
+    });
+
+    // Convert duration to minutes
+    summary.totalDuration = Math.round(summary.totalDuration / 60);
+
+    // Convert distance to miles
+    summary.totalDistance = (summary.totalDistance * 0.000621371).toFixed(2);
+
+    return summary;
+}
+
+/**
+ * Display route on map with colored polylines
+ */
+function displayRouteOnMap(directionsResult, segments) {
+    // Clear existing overlays
+    if (directionsRenderer) {
+        directionsRenderer.setMap(null);
+    }
+
+    // Create bounds to fit all segments
+    const bounds = new google.maps.LatLngBounds();
+
+    // Draw each segment with appropriate color
+    segments.forEach((segment, index) => {
+        const step = getStepFromDirections(directionsResult, index);
+        if (!step) return;
+
+        const color = getSegmentColor(segment);
+
+        const polyline = new google.maps.Polyline({
+            path: google.maps.geometry.encoding.decodePath(segment.polyline),
+            strokeColor: color,
+            strokeOpacity: 0.8,
+            strokeWeight: 6,
+            map: map
+        });
+
+        // Extend bounds to include this segment
+        polyline.getPath().forEach(latLng => {
+            bounds.extend(latLng);
+        });
+
+        // Add click listener for segment info
+        polyline.addListener('click', () => {
+            showSegmentInfo(segment, polyline.getPath().getAt(0));
+        });
+    });
+
+    // Fit map to show entire route
+    map.fitBounds(bounds);
+
+    // Add start and end markers
+    addRouteMarkers(directionsResult);
+}
+
+/**
+ * Get step from directions result by index
+ */
+function getStepFromDirections(directionsResult, index) {
+    let currentIndex = 0;
+    const legs = directionsResult.routes[0].legs;
+
+    for (const leg of legs) {
+        for (const step of leg.steps) {
+            if (currentIndex === index) {
+                return step;
+            }
+            currentIndex++;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Get color for a route segment
+ */
+function getSegmentColor(segment) {
+    if (segment.mode === 'RAIL' && segment.lineColor) {
+        return segment.lineColor;
+    }
+
+    return MODE_COLORS[segment.mode] || '#333333';
+}
+
+/**
+ * Add start and end markers to the map
+ */
+function addRouteMarkers(directionsResult) {
+    const route = directionsResult.routes[0];
+    const leg = route.legs[0];
+
+    // Start marker
+    new google.maps.Marker({
+        position: leg.start_location,
+        map: map,
+        label: 'A',
+        title: 'Origin: ' + leg.start_address
+    });
+
+    // End marker
+    new google.maps.Marker({
+        position: leg.end_location,
+        map: map,
+        label: 'B',
+        title: 'Destination: ' + leg.end_address
+    });
+}
+
+/**
+ * Show info window for a segment
+ */
+function showSegmentInfo(segment, position) {
+    let content = `<div style="padding: 8px; max-width: 250px;">`;
+    content += `<strong>${segment.mode}</strong><br>`;
+
+    if (segment.mode === 'BUS' && segment.routeNumber) {
+        content += `Route: ${segment.routeNumber}<br>`;
+    }
+    if (segment.mode === 'RAIL' && segment.lineName) {
+        content += `Line: ${segment.lineName}<br>`;
+    }
+    if (segment.direction) {
+        content += `Direction: ${segment.direction}<br>`;
+    }
+    if (segment.stops > 0) {
+        content += `Stops: ${segment.stops}<br>`;
+    }
+
+    content += `Duration: ${Math.round(segment.duration / 60)} min<br>`;
+    content += `Distance: ${(segment.distance * 0.000621371).toFixed(2)} mi`;
+    content += `</div>`;
+
+    const infoWindow = new google.maps.InfoWindow({
+        content: content,
+        position: position
+    });
+
+    infoWindow.open(map);
+}
+
+/**
+ * Handle directions API errors
+ */
+function handleDirectionsError(status) {
+    let errorMessage = 'Unable to generate route. ';
+    let suggestion = '';
+
+    switch (status) {
+        case google.maps.DirectionsStatus.NOT_FOUND:
+            errorMessage += 'One or both addresses could not be found.';
+            suggestion = 'Try adding "Chicago, IL" to your addresses or be more specific.';
+            break;
+        case google.maps.DirectionsStatus.ZERO_RESULTS:
+            errorMessage += 'No transit route found between these locations.';
+            suggestion = 'Try addresses within Chicago city limits, or use the Example Route button.';
+            break;
+        case google.maps.DirectionsStatus.MAX_ROUTE_LENGTH_EXCEEDED:
+            errorMessage += 'Route is too long.';
+            suggestion = 'Try addresses closer together within Chicago.';
+            break;
+        case google.maps.DirectionsStatus.INVALID_REQUEST:
+            errorMessage += 'Invalid request.';
+            suggestion = 'Please enter complete street addresses in Chicago.';
+            break;
+        case google.maps.DirectionsStatus.OVER_QUERY_LIMIT:
+            errorMessage += 'Query limit exceeded.';
+            suggestion = 'Please wait a moment and try again.';
+            break;
+        case google.maps.DirectionsStatus.REQUEST_DENIED:
+            errorMessage += 'Request denied.';
+            suggestion = 'Check that your Google Maps API key is configured correctly in index.html.';
+            break;
+        case google.maps.DirectionsStatus.UNKNOWN_ERROR:
+            errorMessage += 'Unknown error occurred.';
+            suggestion = 'This is usually temporary. Please try again in a moment.';
+            break;
+        default:
+            errorMessage += 'Please check your addresses and try again.';
+            suggestion = 'Make sure both addresses are valid locations in Chicago.';
+    }
+
+    if (suggestion) {
+        errorMessage += ' ' + suggestion;
+    }
+
+    showError(errorMessage);
+    console.error('Directions error:', status);
+}
+
+/**
+ * UI Helper Functions
+ */
+function showLoading() {
+    document.getElementById('loading-message').style.display = 'block';
+    document.getElementById('generate-btn').disabled = true;
+}
+
+function hideLoading() {
+    document.getElementById('loading-message').style.display = 'none';
+    document.getElementById('generate-btn').disabled = false;
+}
+
+function showError(message) {
+    const errorDiv = document.getElementById('error-message');
+    errorDiv.textContent = message;
+    errorDiv.style.display = 'block';
+}
+
+function hideError() {
+    document.getElementById('error-message').style.display = 'none';
+}
+
+function showSuccess(message) {
+    // Could add a success message element, for now just log
+    console.log('Success:', message);
+}
+
+/**
+ * Update API key status indicator
+ */
+function updateAPIKeyStatus(isValid) {
+    const statusElement = document.getElementById('api-key-status');
+    if (!statusElement) return;
+
+    if (isValid) {
+        statusElement.textContent = '✓ Google Maps API connected';
+        statusElement.className = 'api-key-status success';
+    } else {
+        statusElement.innerHTML = `⚠️ Google Maps API key not configured<br>
+            <small>Please add your API key in index.html (line 72)</small>`;
+        statusElement.className = 'api-key-status error';
+    }
+}
+
+/**
+ * Keyboard shortcuts
+ */
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        // Space bar - play/pause
+        if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+            e.preventDefault();
+            const playBtn = document.getElementById('play-btn');
+            const pauseBtn = document.getElementById('pause-btn');
+
+            if (playBtn && !playBtn.disabled) {
+                playBtn.click();
+            } else if (pauseBtn && !pauseBtn.disabled) {
+                pauseBtn.click();
+            }
+        }
+
+        // Escape - stop playback
+        if (e.code === 'Escape') {
+            const stopBtn = document.getElementById('stop-btn');
+            if (stopBtn && !stopBtn.disabled) {
+                stopBtn.click();
+            }
+        }
+    });
+}
+
+/**
+ * Event Listeners
+ */
+document.addEventListener('DOMContentLoaded', () => {
+    // Setup keyboard shortcuts
+    setupKeyboardShortcuts();
+
+    // Wait for Google Maps to load
+    if (typeof google !== 'undefined') {
+        initMap();
+    } else {
+        console.error('Google Maps API not loaded. Check your API key.');
+        showError('Google Maps API not loaded. Please check your API key in index.html');
+        updateAPIKeyStatus(false);
+    }
+
+    // Generate button
+    document.getElementById('generate-btn').addEventListener('click', () => {
+        const origin = document.getElementById('origin').value.trim();
+        const destination = document.getElementById('destination').value.trim();
+
+        if (!origin || !destination) {
+            showError('Please enter both origin and destination addresses.');
+            return;
+        }
+
+        requestDirections(origin, destination);
+    });
+
+    // Example route button
+    document.getElementById('example-btn').addEventListener('click', () => {
+        document.getElementById('origin').value = 'University of Chicago, Chicago, IL';
+        document.getElementById('destination').value = "O'Hare International Airport, Chicago, IL";
+        hideError();
+    });
+
+    // Allow Enter key to submit
+    document.getElementById('origin').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('generate-btn').click();
+        }
+    });
+
+    document.getElementById('destination').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('generate-btn').click();
+        }
+    });
+
+    // Add helpful console message
+    console.log('%c🎵 Chicago Songline Simulator', 'font-size: 20px; font-weight: bold; color: #00a1de;');
+    console.log('%cKeyboard shortcuts:', 'font-weight: bold;');
+    console.log('  Enter - Generate songline');
+    console.log('  Space - Play/Pause audio');
+    console.log('  Escape - Stop audio');
+});
+
+/**
+ * Expose init function for Google Maps callback
+ */
+window.initMap = initMap;
+
+/**
+ * ============================================================================
+ * PHASE 4: TIMELINE VISUALIZATION
+ * ============================================================================
+ */
+
+// Timeline state
+let timelineCanvas = null;
+let timelineCtx = null;
+let playbackPosition = 0; // 0 to 1 representing progress through route
+
+/**
+ * Color mappings for timeline visualization
+ */
+const TIMELINE_COLORS = {
+    BUS: '#FF6B35',           // Orange
+    RAIL: null,               // Use actual line color
+    WALKING: '#999999',       // Gray
+    DRIVING: '#87CEEB'        // Light blue
+};
+
+/**
+ * Main timeline rendering function
+ * Creates a canvas-based visualization of route segments
+ */
+function renderTimeline(segments) {
+    if (!segments || segments.length === 0) {
+        console.warn('No segments to render in timeline');
+        return;
+    }
+
+    // Get container and clear it
+    const container = document.getElementById('sound-timeline');
+    // Remove only the placeholder text, keep controls if they exist
+    const placeholders = container.querySelectorAll('.placeholder-text, .placeholder-icon');
+    placeholders.forEach(p => p.remove());
+
+    // Create canvas element
+    const canvas = document.createElement('canvas');
+    canvas.id = 'timeline-canvas';
+    container.appendChild(canvas);
+
+    timelineCanvas = canvas;
+    timelineCtx = canvas.getContext('2d');
+
+    // Set canvas size (high DPI support)
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = 180 * dpr; // Fixed height for timeline
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = '180px';
+
+    // Scale context for high DPI
+    timelineCtx.scale(dpr, dpr);
+
+    // Store dimensions for later use
+    const width = rect.width;
+    const height = 180;
+
+    // Draw the timeline
+    drawTimeline(segments, width, height);
+
+    // Add interactivity
+    addTimelineInteractivity(canvas, segments, width, height);
+
+    // Add resize handler
+    window.addEventListener('resize', () => {
+        const newRect = container.getBoundingClientRect();
+        canvas.width = newRect.width * dpr;
+        canvas.height = 180 * dpr;
+        canvas.style.width = newRect.width + 'px';
+        canvas.style.height = '180px';
+        timelineCtx.scale(dpr, dpr);
+        drawTimeline(segments, newRect.width, height);
+    });
+
+    console.log('Timeline rendered with', segments.length, 'segments');
+}
+
+/**
+ * Draw the complete timeline visualization
+ */
+function drawTimeline(segments, width, height) {
+    const ctx = timelineCtx;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+
+    // Calculate total duration
+    const totalDuration = segments.reduce((sum, seg) => sum + seg.duration, 0);
+
+    // Layout constants
+    const TIMELINE_Y = 60;
+    const TIMELINE_HEIGHT = 60;
+    const MARGIN_X = 20;
+    const TIMELINE_WIDTH = width - (MARGIN_X * 2);
+
+    // Draw segments
+    let currentX = MARGIN_X;
+
+    segments.forEach((segment, index) => {
+        const segmentWidth = (segment.duration / totalDuration) * TIMELINE_WIDTH;
+
+        // Get segment color
+        const color = getTimelineSegmentColor(segment);
+
+        // Draw segment bar
+        drawSegmentBar(ctx, currentX, TIMELINE_Y, segmentWidth, TIMELINE_HEIGHT, color, segment);
+
+        // Draw waveform overlay
+        drawWaveform(ctx, currentX, TIMELINE_Y, segmentWidth, TIMELINE_HEIGHT, segment);
+
+        // Draw segment label
+        drawSegmentLabel(ctx, currentX, TIMELINE_Y, segmentWidth, TIMELINE_HEIGHT, segment);
+
+        // Draw transfer marker between segments
+        if (index < segments.length - 1) {
+            drawTransferMarker(ctx, currentX + segmentWidth, TIMELINE_Y, TIMELINE_HEIGHT);
+        }
+
+        currentX += segmentWidth;
+    });
+
+    // Draw playback indicator
+    drawPlaybackIndicator(ctx, MARGIN_X, TIMELINE_Y, TIMELINE_WIDTH, TIMELINE_HEIGHT);
+
+    // Draw timeline border
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(MARGIN_X, TIMELINE_Y, TIMELINE_WIDTH, TIMELINE_HEIGHT);
+}
+
+/**
+ * Get color for a timeline segment
+ */
+function getTimelineSegmentColor(segment) {
+    if (segment.mode === 'RAIL' && segment.lineColor) {
+        return segment.lineColor;
+    }
+    return TIMELINE_COLORS[segment.mode] || '#666666';
+}
+
+/**
+ * Draw a segment bar with gradient
+ */
+function drawSegmentBar(ctx, x, y, width, height, color, segment) {
+    // Create gradient for depth
+    const gradient = ctx.createLinearGradient(x, y, x, y + height);
+    gradient.addColorStop(0, color);
+    gradient.addColorStop(1, darkenColor(color, 0.3));
+
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, y, width, height);
+
+    // Add subtle border
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, width, height);
+
+    // Add highlight at top
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.fillRect(x, y, width, 3);
+}
+
+/**
+ * Draw decorative waveform pattern on segment
+ */
+function drawWaveform(ctx, x, y, width, height, segment) {
+    if (width < 20) return; // Skip if segment too small
+
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    const centerY = y + height / 2;
+    const waveformType = getWaveformType(segment.mode);
+
+    ctx.beginPath();
+
+    if (waveformType === 'sine') {
+        // Smooth sine wave for rail
+        for (let i = 0; i < width; i += 2) {
+            const amplitude = 12;
+            const frequency = 0.05;
+            const yOffset = Math.sin(i * frequency) * amplitude;
+            if (i === 0) {
+                ctx.moveTo(x + i, centerY + yOffset);
+            } else {
+                ctx.lineTo(x + i, centerY + yOffset);
+            }
+        }
+    } else if (waveformType === 'jagged') {
+        // Jagged pattern for bus
+        const steps = Math.floor(width / 10);
+        for (let i = 0; i <= steps; i++) {
+            const xPos = x + (i / steps) * width;
+            const yOffset = (i % 2 === 0 ? -10 : 10);
+            if (i === 0) {
+                ctx.moveTo(xPos, centerY);
+            } else {
+                ctx.lineTo(xPos, centerY + yOffset);
+            }
+        }
+    } else if (waveformType === 'pulse') {
+        // Square pulse for walking
+        const steps = Math.floor(width / 15);
+        for (let i = 0; i <= steps; i++) {
+            const xPos = x + (i / steps) * width;
+            const yOffset = (i % 2 === 0 ? -8 : 8);
+            ctx.lineTo(xPos, centerY + yOffset);
+        }
+    } else {
+        // Smooth curve for driving
+        for (let i = 0; i < width; i += 3) {
+            const amplitude = 8;
+            const frequency = 0.08;
+            const yOffset = Math.cos(i * frequency) * amplitude;
+            if (i === 0) {
+                ctx.moveTo(x + i, centerY + yOffset);
+            } else {
+                ctx.lineTo(x + i, centerY + yOffset);
+            }
+        }
+    }
+
+    ctx.stroke();
+    ctx.restore();
+}
+
+/**
+ * Get waveform type based on transit mode
+ */
+function getWaveformType(mode) {
+    const types = {
+        'BUS': 'jagged',
+        'RAIL': 'sine',
+        'WALKING': 'pulse',
+        'DRIVING': 'smooth'
+    };
+    return types[mode] || 'sine';
+}
+
+/**
+ * Draw segment label beneath the bar
+ */
+function drawSegmentLabel(ctx, x, y, width, height, segment) {
+    if (width < 40) return; // Skip label if segment too small
+
+    ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    const labelY = y + height + 8;
+    let labelText = '';
+
+    if (segment.mode === 'BUS' && segment.routeNumber) {
+        labelText = `Bus ${segment.routeNumber}`;
+        if (segment.stops > 0) {
+            labelText += ` - ${segment.stops} stops`;
+        }
+    } else if (segment.mode === 'RAIL' && segment.lineName) {
+        labelText = segment.lineName;
+        if (segment.stops > 0) {
+            labelText += ` - ${segment.stops} stops`;
+        }
+    } else if (segment.mode === 'WALKING') {
+        const miles = (segment.distance * 0.000621371).toFixed(1);
+        labelText = `Walk - ${miles} mi`;
+    } else if (segment.mode === 'DRIVING') {
+        const miles = (segment.distance * 0.000621371).toFixed(1);
+        labelText = `Drive - ${miles} mi`;
+    } else {
+        labelText = segment.mode;
+    }
+
+    // Truncate if too long
+    const maxWidth = width - 10;
+    ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+    if (ctx.measureText(labelText).width > maxWidth) {
+        while (ctx.measureText(labelText + '...').width > maxWidth && labelText.length > 0) {
+            labelText = labelText.slice(0, -1);
+        }
+        labelText += '...';
+    }
+
+    // Draw label with shadow for readability
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+    ctx.shadowBlur = 3;
+    ctx.fillText(labelText, x + width / 2, labelY);
+
+    // Duration label
+    const minutes = Math.round(segment.duration / 60);
+    const durationText = `${minutes} min`;
+    ctx.font = '9px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.fillText(durationText, x + width / 2, labelY + 14);
+
+    ctx.restore();
+}
+
+/**
+ * Draw transfer marker between segments
+ */
+function drawTransferMarker(ctx, x, y, height) {
+    ctx.save();
+
+    // Draw vertical line
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y + height);
+    ctx.stroke();
+
+    // Draw dot at center
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y + height / 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Draw outer ring
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y + height / 2, 7, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+/**
+ * Draw playback position indicator
+ */
+function drawPlaybackIndicator(ctx, x, y, width, height) {
+    if (playbackPosition <= 0) return;
+
+    const indicatorX = x + (width * playbackPosition);
+
+    ctx.save();
+
+    // Draw vertical line
+    ctx.strokeStyle = '#FFD700'; // Gold color
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(255, 215, 0, 0.8)';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(indicatorX, y - 10);
+    ctx.lineTo(indicatorX, y + height + 10);
+    ctx.stroke();
+
+    // Draw top triangle
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    ctx.moveTo(indicatorX, y - 10);
+    ctx.lineTo(indicatorX - 6, y - 20);
+    ctx.lineTo(indicatorX + 6, y - 20);
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw bottom triangle
+    ctx.beginPath();
+    ctx.moveTo(indicatorX, y + height + 10);
+    ctx.lineTo(indicatorX - 6, y + height + 20);
+    ctx.lineTo(indicatorX + 6, y + height + 20);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+}
+
+/**
+ * Add interactivity to timeline (click, hover)
+ */
+function addTimelineInteractivity(canvas, segments, width, height) {
+    const MARGIN_X = 20;
+    const TIMELINE_Y = 60;
+    const TIMELINE_WIDTH = width - (MARGIN_X * 2);
+    const totalDuration = segments.reduce((sum, seg) => sum + seg.duration, 0);
+
+    // Click handler - set playback position
+    canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+
+        if (x >= MARGIN_X && x <= MARGIN_X + TIMELINE_WIDTH) {
+            playbackPosition = (x - MARGIN_X) / TIMELINE_WIDTH;
+            drawTimeline(segments, width, height);
+
+            // Log which segment was clicked
+            const clickedSegment = getSegmentAtPosition(playbackPosition, segments);
+            console.log('Clicked segment:', clickedSegment);
+        }
+    });
+
+    // Hover handler - show tooltip
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        if (x >= MARGIN_X && x <= MARGIN_X + TIMELINE_WIDTH &&
+            y >= TIMELINE_Y && y <= TIMELINE_Y + 60) {
+            canvas.style.cursor = 'pointer';
+
+            // Could add tooltip here
+            const position = (x - MARGIN_X) / TIMELINE_WIDTH;
+            const segment = getSegmentAtPosition(position, segments);
+            canvas.title = getSegmentTooltip(segment);
+        } else {
+            canvas.style.cursor = 'default';
+            canvas.title = '';
+        }
+    });
+}
+
+/**
+ * Get segment at a given position (0 to 1)
+ */
+function getSegmentAtPosition(position, segments) {
+    const totalDuration = segments.reduce((sum, seg) => sum + seg.duration, 0);
+    let accumulatedDuration = 0;
+
+    for (const segment of segments) {
+        accumulatedDuration += segment.duration;
+        if (position <= accumulatedDuration / totalDuration) {
+            return segment;
+        }
+    }
+
+    return segments[segments.length - 1];
+}
+
+/**
+ * Generate tooltip text for a segment
+ */
+function getSegmentTooltip(segment) {
+    let tooltip = segment.mode;
+
+    if (segment.mode === 'BUS' && segment.routeNumber) {
+        tooltip = `Bus Route ${segment.routeNumber}`;
+    } else if (segment.mode === 'RAIL' && segment.lineName) {
+        tooltip = segment.lineName;
+    }
+
+    if (segment.stops > 0) {
+        tooltip += ` - ${segment.stops} stops`;
+    }
+
+    tooltip += ` - ${Math.round(segment.duration / 60)} minutes`;
+
+    return tooltip;
+}
+
+/**
+ * Update playback position (for audio sync)
+ * @param {number} position - Position from 0 to 1
+ */
+function updatePlaybackPosition(position) {
+    playbackPosition = Math.max(0, Math.min(1, position));
+
+    if (timelineCanvas && window.routeSegments) {
+        const rect = timelineCanvas.getBoundingClientRect();
+        drawTimeline(window.routeSegments, rect.width, 180);
+    }
+}
+
+/**
+ * Reset playback to start
+ */
+function resetPlayback() {
+    updatePlaybackPosition(0);
+}
+
+/**
+ * Helper: Darken a color by a factor
+ */
+function darkenColor(color, factor) {
+    // Parse hex color
+    let hex = color.replace('#', '');
+    let r = parseInt(hex.substr(0, 2), 16);
+    let g = parseInt(hex.substr(2, 2), 16);
+    let b = parseInt(hex.substr(4, 2), 16);
+
+    // Darken
+    r = Math.floor(r * (1 - factor));
+    g = Math.floor(g * (1 - factor));
+    b = Math.floor(b * (1 - factor));
+
+    // Convert back to hex
+    return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Expose global functions for audio synchronization
+ */
+window.updatePlaybackPosition = updatePlaybackPosition;
+window.resetPlayback = resetPlayback;
+window.renderTimeline = renderTimeline;
+
+/**
+ * ============================================================================
+ * PHASE 3: AUDIO GENERATION SYSTEM
+ * ============================================================================
+ * Web Audio API implementation that converts route segments into playable audio
+ *
+ * Sound Design Rules:
+ * - BUS: Bass tone, pitch = route number mod 12, duration scales with stops
+ * - RAIL: Mid-range tone, pitch mapped to line color, rhythmic pattern based on stops
+ * - WALKING: Percussive clicks, tempo based on walking pace
+ * - DRIVING: Filtered white noise with rhythm, tempo based on speed
+ * - TRANSFER: Brief chord between segments
+ */
+
+// Audio system state
+let audioContext = null;
+let audioSequence = [];
+let isPlaying = false;
+let currentTime = 0;
+let audioStartTime = 0;
+let animationFrameId = null;
+let scheduledSources = [];
+let totalAudioDuration = 0;
+
+// Note frequencies for musical mapping (C major scale with chromatic notes)
+const NOTE_FREQUENCIES = [
+    261.63,  // C4  (0)
+    277.18,  // C#4 (1)
+    293.66,  // D4  (2)
+    311.13,  // D#4 (3)
+    329.63,  // E4  (4)
+    349.23,  // F4  (5)
+    369.99,  // F#4 (6)
+    392.00,  // G4  (7)
+    415.30,  // G#4 (8)
+    440.00,  // A4  (9)
+    466.16,  // A#4 (10)
+    493.88   // B4  (11)
+];
+
+// CTA Line color to pitch mapping
+const LINE_PITCH_MAP = {
+    '#c60c30': 0,  // Red Line -> C
+    '#00a1de': 4,  // Blue Line -> E
+    '#62361b': 7,  // Brown Line -> G
+    '#009b3a': 9,  // Green Line -> A
+    '#f9461c': 2,  // Orange Line -> D
+    '#522398': 5,  // Purple Line -> F
+    '#f9e300': 11, // Yellow Line -> B
+    '#e27ea6': 10  // Pink Line -> A#
+};
+
+/**
+ * Initialize audio context (must be called after user gesture)
+ */
+function initAudioContext() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return audioContext;
+}
+
+/**
+ * Create a noise buffer for percussive and driving sounds
+ */
+function createNoiseBuffer(duration) {
+    const ctx = audioContext;
+    const bufferSize = ctx.sampleRate * duration;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+
+    // Generate white noise
+    for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+    }
+
+    return buffer;
+}
+
+/**
+ * Generate audio for a BUS segment
+ * Bass tone, pitch based on route number mod 12, duration scales with stops
+ */
+function generateBusSound(segment, startTime) {
+    const ctx = audioContext;
+    const routeNum = parseInt(segment.routeNumber) || 0;
+    const pitchIndex = routeNum % 12;
+    const frequency = NOTE_FREQUENCIES[pitchIndex] / 2; // Bass octave (lower)
+
+    // Duration: base 0.4s + 0.1s per stop
+    const duration = Math.min(0.4 + (segment.stops * 0.1), 2.0);
+
+    // Create oscillator (sine wave for smooth bass)
+    const oscillator = ctx.createOscillator();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, startTime);
+
+    // Create gain node with envelope
+    const gainNode = ctx.createGain();
+    gainNode.gain.setValueAtTime(0, startTime);
+    gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.05); // Attack
+    gainNode.gain.linearRampToValueAtTime(0.2, startTime + duration - 0.1); // Sustain
+    gainNode.gain.linearRampToValueAtTime(0, startTime + duration); // Release
+
+    // Connect and schedule
+    oscillator.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    oscillator.start(startTime);
+    oscillator.stop(startTime + duration);
+
+    scheduledSources.push(oscillator);
+
+    return duration;
+}
+
+/**
+ * Generate audio for a RAIL segment
+ * Mid-range tone, pitch mapped to line color, rhythm based on stops
+ */
+function generateTrainSound(segment, startTime) {
+    const ctx = audioContext;
+    const pitchIndex = LINE_PITCH_MAP[segment.lineColor] || 0;
+    const frequency = NOTE_FREQUENCIES[pitchIndex];
+
+    // Create a rhythmic pattern based on stops
+    const stopCount = Math.max(segment.stops, 1);
+    const beatDuration = 0.15;
+    const totalDuration = Math.min(stopCount * beatDuration, 2.5);
+
+    for (let i = 0; i < Math.min(stopCount, 15); i++) {
+        const beatStart = startTime + (i * beatDuration);
+
+        // Create oscillator (square wave for train-like sound)
+        const oscillator = ctx.createOscillator();
+        oscillator.type = 'square';
+        oscillator.frequency.setValueAtTime(frequency, beatStart);
+
+        // Create gain node with sharp attack/release
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0, beatStart);
+        gainNode.gain.linearRampToValueAtTime(0.15, beatStart + 0.01);
+        gainNode.gain.linearRampToValueAtTime(0, beatStart + beatDuration * 0.6);
+
+        // Connect and schedule
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.start(beatStart);
+        oscillator.stop(beatStart + beatDuration);
+
+        scheduledSources.push(oscillator);
+    }
+
+    return totalDuration;
+}
+
+/**
+ * Generate audio for a WALKING segment
+ * Percussive clicks, tempo based on pace
+ */
+function generateWalkingSound(segment, startTime) {
+    const ctx = audioContext;
+
+    // Calculate pace (meters per second)
+    const pace = segment.distance / segment.duration;
+    const stepInterval = 0.5 / Math.max(pace, 0.5); // Faster walking = faster clicks
+
+    const clickCount = Math.min(Math.floor(1.5 / stepInterval), 8);
+    const totalDuration = clickCount * stepInterval;
+
+    for (let i = 0; i < clickCount; i++) {
+        const clickStart = startTime + (i * stepInterval);
+
+        // Create high-frequency click
+        const oscillator = ctx.createOscillator();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(1200, clickStart);
+
+        // Very short envelope for click sound
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0, clickStart);
+        gainNode.gain.linearRampToValueAtTime(0.2, clickStart + 0.005);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, clickStart + 0.05);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.start(clickStart);
+        oscillator.stop(clickStart + 0.05);
+
+        scheduledSources.push(oscillator);
+    }
+
+    return totalDuration;
+}
+
+/**
+ * Generate audio for a DRIVING segment
+ * White noise with rhythm, tempo based on speed
+ */
+function generateDrivingSound(segment, startTime) {
+    const ctx = audioContext;
+
+    // Calculate speed
+    const speed = segment.distance / segment.duration;
+    const pulseDuration = 0.2;
+    const pulseInterval = 0.4 / Math.max(speed / 10, 0.5);
+
+    const pulseCount = Math.min(Math.floor(1.2 / pulseInterval), 6);
+    const totalDuration = pulseCount * pulseInterval;
+
+    for (let i = 0; i < pulseCount; i++) {
+        const pulseStart = startTime + (i * pulseInterval);
+
+        // Create noise buffer
+        const noiseBuffer = createNoiseBuffer(pulseDuration);
+        const source = ctx.createBufferSource();
+        source.buffer = noiseBuffer;
+
+        // Create filter for colored noise
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(400, pulseStart);
+
+        // Create gain envelope
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0, pulseStart);
+        gainNode.gain.linearRampToValueAtTime(0.1, pulseStart + 0.05);
+        gainNode.gain.linearRampToValueAtTime(0, pulseStart + pulseDuration);
+
+        source.connect(filter);
+        filter.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        source.start(pulseStart);
+
+        scheduledSources.push(source);
+    }
+
+    return totalDuration;
+}
+
+/**
+ * Generate a transfer chord (transition between segments)
+ */
+function generateTransferSound(startTime) {
+    const ctx = audioContext;
+    const duration = 0.3;
+
+    // Major triad (C-E-G)
+    const frequencies = [261.63, 329.63, 392.00];
+
+    frequencies.forEach(freq => {
+        const oscillator = ctx.createOscillator();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(freq, startTime);
+
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.08, startTime + 0.05);
+        gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        oscillator.start(startTime);
+        oscillator.stop(startTime + duration);
+
+        scheduledSources.push(oscillator);
+    });
+
+    return duration;
+}
+
+/**
+ * Generate complete audio sequence from route segments
+ */
+function generateAudio(segments) {
+    if (!segments || segments.length === 0) {
+        console.warn('No segments to generate audio from');
+        return;
+    }
+
+    // Initialize audio context
+    initAudioContext();
+
+    // Build audio sequence
+    audioSequence = [];
+    let currentPosition = 0;
+
+    segments.forEach((segment, index) => {
+        const audioSegment = {
+            segment: segment,
+            startTime: currentPosition,
+            duration: 0,
+            index: index
+        };
+
+        // Map segment to sound based on mode
+        switch (segment.mode) {
+            case 'BUS':
+                audioSegment.duration = 0.4 + (segment.stops * 0.1);
+                audioSegment.duration = Math.min(audioSegment.duration, 2.0);
+                audioSegment.soundType = 'bus';
+                break;
+
+            case 'RAIL':
+                const stopCount = Math.max(segment.stops, 1);
+                audioSegment.duration = Math.min(stopCount * 0.15, 2.5);
+                audioSegment.soundType = 'rail';
+                break;
+
+            case 'WALKING':
+                const pace = segment.distance / segment.duration;
+                const stepInterval = 0.5 / Math.max(pace, 0.5);
+                const clickCount = Math.min(Math.floor(1.5 / stepInterval), 8);
+                audioSegment.duration = clickCount * stepInterval;
+                audioSegment.soundType = 'walking';
+                break;
+
+            case 'DRIVING':
+                const speed = segment.distance / segment.duration;
+                const pulseInterval = 0.4 / Math.max(speed / 10, 0.5);
+                const pulseCount = Math.min(Math.floor(1.2 / pulseInterval), 6);
+                audioSegment.duration = pulseCount * pulseInterval;
+                audioSegment.soundType = 'driving';
+                break;
+
+            default:
+                audioSegment.duration = 0.5;
+                audioSegment.soundType = 'walking';
+        }
+
+        audioSequence.push(audioSegment);
+        currentPosition += audioSegment.duration;
+
+        // Add transfer sound between segments (except after last segment)
+        if (index < segments.length - 1) {
+            audioSequence.push({
+                segment: null,
+                startTime: currentPosition,
+                duration: 0.3,
+                index: -1,
+                soundType: 'transfer'
+            });
+            currentPosition += 0.3;
+        }
+    });
+
+    totalAudioDuration = currentPosition;
+
+    console.log('Audio sequence generated:', audioSequence);
+    console.log('Total audio duration:', totalAudioDuration.toFixed(2), 'seconds');
+
+    // Create audio controls UI
+    createAudioControls(totalAudioDuration);
+}
+
+/**
+ * Create audio control UI elements
+ */
+function createAudioControls(totalDuration) {
+    const timeline = document.getElementById('sound-timeline');
+
+    // Check if controls already exist
+    let controlsContainer = document.getElementById('audio-controls-container');
+
+    if (!controlsContainer) {
+        controlsContainer = document.createElement('div');
+        controlsContainer.id = 'audio-controls-container';
+        controlsContainer.className = 'audio-controls';
+        timeline.insertBefore(controlsContainer, timeline.firstChild);
+    }
+
+    controlsContainer.innerHTML = `
+        <div class="audio-buttons">
+            <button id="play-btn" class="audio-btn" title="Play">▶</button>
+            <button id="pause-btn" class="audio-btn" title="Pause" disabled>⏸</button>
+            <button id="stop-btn" class="audio-btn" title="Stop" disabled>⏹</button>
+        </div>
+        <div class="time-display">
+            <span id="current-time">0:00</span> / <span id="total-time">${formatTimeAudio(totalDuration)}</span>
+        </div>
+    `;
+
+    // Add event listeners
+    document.getElementById('play-btn').addEventListener('click', playAudio);
+    document.getElementById('pause-btn').addEventListener('click', pauseAudio);
+    document.getElementById('stop-btn').addEventListener('click', stopAudio);
+}
+
+/**
+ * Play audio sequence
+ */
+function playAudio() {
+    if (isPlaying) return;
+
+    initAudioContext();
+
+    // Resume audio context if suspended (browser autoplay policy)
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+
+    isPlaying = true;
+    audioStartTime = audioContext.currentTime - currentTime;
+
+    // Schedule all sounds from current position
+    audioSequence.forEach(audioSeg => {
+        if (audioSeg.startTime < currentTime) return; // Skip already played segments
+
+        const scheduleTime = audioStartTime + audioSeg.startTime;
+
+        switch (audioSeg.soundType) {
+            case 'bus':
+                generateBusSound(audioSeg.segment, scheduleTime);
+                break;
+            case 'rail':
+                generateTrainSound(audioSeg.segment, scheduleTime);
+                break;
+            case 'walking':
+                generateWalkingSound(audioSeg.segment, scheduleTime);
+                break;
+            case 'driving':
+                generateDrivingSound(audioSeg.segment, scheduleTime);
+                break;
+            case 'transfer':
+                generateTransferSound(scheduleTime);
+                break;
+        }
+    });
+
+    // Update UI
+    document.getElementById('play-btn').disabled = true;
+    document.getElementById('play-btn').classList.add('playing');
+    document.getElementById('pause-btn').disabled = false;
+    document.getElementById('stop-btn').disabled = false;
+
+    // Start time update animation
+    updateTimeDisplayAudio();
+}
+
+/**
+ * Pause audio playback
+ */
+function pauseAudio() {
+    if (!isPlaying) return;
+
+    isPlaying = false;
+
+    // Stop all scheduled sounds
+    stopAllScheduledSounds();
+
+    // Update UI
+    document.getElementById('play-btn').disabled = false;
+    document.getElementById('play-btn').classList.remove('playing');
+    document.getElementById('pause-btn').disabled = true;
+
+    if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+}
+
+/**
+ * Stop audio playback and reset
+ */
+function stopAudio() {
+    isPlaying = false;
+    currentTime = 0;
+
+    // Stop all scheduled sounds
+    stopAllScheduledSounds();
+
+    // Reset timeline playback indicator
+    if (typeof resetPlayback === 'function') {
+        resetPlayback();
+    }
+
+    // Update UI (only if buttons exist)
+    const playBtn = document.getElementById('play-btn');
+    const pauseBtn = document.getElementById('pause-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const currentTimeEl = document.getElementById('current-time');
+
+    if (playBtn) {
+        playBtn.disabled = false;
+        playBtn.classList.remove('playing');
+    }
+    if (pauseBtn) pauseBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+    if (currentTimeEl) currentTimeEl.textContent = '0:00';
+
+    if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+}
+
+/**
+ * Stop all currently scheduled audio sources
+ */
+function stopAllScheduledSounds() {
+    scheduledSources.forEach(source => {
+        try {
+            source.stop();
+        } catch (e) {
+            // Already stopped
+        }
+    });
+    scheduledSources = [];
+}
+
+/**
+ * Update time display during playback
+ */
+function updateTimeDisplayAudio() {
+    if (!isPlaying) return;
+
+    currentTime = audioContext.currentTime - audioStartTime;
+
+    if (currentTime >= totalAudioDuration) {
+        // Playback finished
+        stopAudio();
+        return;
+    }
+
+    // Update time display
+    document.getElementById('current-time').textContent = formatTimeAudio(currentTime);
+
+    // Update timeline playback indicator
+    if (typeof updatePlaybackPosition === 'function') {
+        const position = currentTime / totalAudioDuration;
+        updatePlaybackPosition(position);
+    }
+
+    // Continue animation
+    animationFrameId = requestAnimationFrame(updateTimeDisplayAudio);
+}
+
+/**
+ * Format time in M:SS format
+ */
+function formatTimeAudio(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Hook into route generation success to generate audio automatically
+ */
+const originalHandleDirectionsSuccess = handleDirectionsSuccess;
+handleDirectionsSuccess = function(result) {
+    // Call original function
+    originalHandleDirectionsSuccess(result);
+
+    // Generate audio and render timeline after route is displayed
+    if (window.routeSegments && window.routeSegments.length > 0) {
+        // First render the timeline (Phase 4)
+        if (typeof renderTimeline === 'function') {
+            renderTimeline(window.routeSegments);
+        }
+
+        // Then generate audio (Phase 3)
+        generateAudio(window.routeSegments);
+
+        // Then generate quilt (Phase 5)
+        if (typeof generateQuilt === 'function') {
+            generateQuilt(window.routeSegments);
+        }
+    }
+};
+
+/**
+ * ============================================================================
+ * PHASE 5: QUILT PATTERN GENERATOR
+ * ============================================================================
+ * Generates an abstract, textile-inspired visualization from route segments
+ *
+ * Design approach:
+ * - Each route segment becomes one or more geometric patches
+ * - Pattern is deterministic (same route = same quilt)
+ * - Uses CTA colors and mode-based colors
+ * - Includes textile details like borders and stitching
+ * - Grid-based layout with varied geometric shapes
+ */
+
+/**
+ * Generate quilt pattern from route segments
+ */
+function generateQuilt(segments) {
+    if (!segments || segments.length === 0) {
+        console.warn('No route segments to generate quilt pattern');
+        return;
+    }
+
+    console.log('Generating quilt pattern from', segments.length, 'segments');
+
+    const container = document.getElementById('quilt-pattern');
+    container.innerHTML = ''; // Clear placeholder
+
+    // Create canvas
+    const canvas = document.createElement('canvas');
+    const canvasSize = 600;
+    canvas.width = canvasSize;
+    canvas.height = canvasSize;
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
+    canvas.style.display = 'block';
+    canvas.style.margin = '0 auto';
+    canvas.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+    canvas.style.borderRadius = '8px';
+
+    container.appendChild(canvas);
+
+    const ctx = canvas.getContext('2d');
+
+    // Calculate grid dimensions based on segment count
+    const gridSize = calculateGridSize(segments.length);
+    const cellSize = canvasSize / gridSize;
+
+    // Generate patches for each segment
+    const patches = generatePatches(segments, gridSize);
+
+    // Draw quilt background
+    ctx.fillStyle = '#f5f5f0';
+    ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+    // Draw each patch
+    patches.forEach(patch => {
+        drawPatch(ctx, patch, cellSize);
+    });
+
+    // Add quilt border (frame)
+    drawQuiltBorder(ctx, canvasSize);
+
+    // Add download button
+    addDownloadButton(container, canvas);
+
+    console.log('Quilt pattern generated successfully');
+}
+
+/**
+ * Calculate grid size based on number of segments
+ * Aims for a roughly square grid
+ */
+function calculateGridSize(segmentCount) {
+    // Each segment might take 1-3 cells depending on complexity
+    const targetCells = segmentCount * 2;
+    const gridSize = Math.ceil(Math.sqrt(targetCells));
+
+    // Ensure minimum 4x4 and maximum 12x12
+    return Math.max(4, Math.min(12, gridSize));
+}
+
+/**
+ * Generate patch data for each segment
+ */
+function generatePatches(segments, gridSize) {
+    const patches = [];
+    let currentRow = 0;
+    let currentCol = 0;
+
+    segments.forEach((segment, index) => {
+        // Determine patch size based on segment importance
+        const patchSize = getPatchSize(segment);
+
+        // Get color palette for this segment
+        const colors = getSegmentColorPalette(segment);
+
+        // Get shape type based on mode
+        const shape = getShapeForMode(segment.mode);
+
+        // Create patch data
+        const patch = {
+            row: currentRow,
+            col: currentCol,
+            size: patchSize,
+            colors: colors,
+            shape: shape,
+            mode: segment.mode,
+            stops: segment.stops,
+            duration: segment.duration,
+            routeInfo: segment.routeNumber || segment.lineName
+        };
+
+        patches.push(patch);
+
+        // Advance position
+        currentCol += patchSize;
+        if (currentCol >= gridSize) {
+            currentCol = 0;
+            currentRow += patchSize;
+        }
+
+        // Wrap to next row if needed
+        if (currentRow >= gridSize) {
+            currentRow = 0;
+        }
+    });
+
+    return patches;
+}
+
+/**
+ * Determine patch size based on segment characteristics
+ */
+function getPatchSize(segment) {
+    // Longer or more complex segments get bigger patches
+    const durationMinutes = segment.duration / 60;
+
+    if (durationMinutes > 20 || segment.stops > 10) {
+        return 2; // 2x2 patch
+    }
+    return 1; // 1x1 patch
+}
+
+/**
+ * Get color palette for a segment
+ */
+function getSegmentColorPalette(segment) {
+    let primaryColor;
+    let secondaryColor;
+    let accentColor;
+
+    switch (segment.mode) {
+        case 'RAIL':
+            // Use actual CTA line color
+            primaryColor = segment.lineColor || '#c60c30';
+            secondaryColor = lightenColor(primaryColor, 40);
+            accentColor = darkenColorQuilt(primaryColor, 20);
+            break;
+
+        case 'BUS':
+            // Orange for buses
+            primaryColor = '#f9461c';
+            secondaryColor = '#ffc8b8';
+            accentColor = '#c73510';
+            break;
+
+        case 'WALKING':
+            // Gray tones for walking
+            primaryColor = '#6c757d';
+            secondaryColor = '#adb5bd';
+            accentColor = '#495057';
+            break;
+
+        case 'DRIVING':
+            // Blue tones for driving
+            primaryColor = '#00a1de';
+            secondaryColor = '#87ceeb';
+            accentColor = '#0077a3';
+            break;
+
+        default:
+            primaryColor = '#333333';
+            secondaryColor = '#666666';
+            accentColor = '#111111';
+    }
+
+    return { primary: primaryColor, secondary: secondaryColor, accent: accentColor };
+}
+
+/**
+ * Get shape pattern for transit mode
+ */
+function getShapeForMode(mode) {
+    const shapes = {
+        'RAIL': 'circles',      // Circular patterns for trains
+        'BUS': 'squares',       // Square blocks for buses
+        'WALKING': 'triangles', // Triangular patterns for walking
+        'DRIVING': 'hexagons'   // Hexagonal patterns for driving
+    };
+
+    return shapes[mode] || 'squares';
+}
+
+/**
+ * Draw a single patch on the canvas
+ */
+function drawPatch(ctx, patch, cellSize) {
+    const x = patch.col * cellSize;
+    const y = patch.row * cellSize;
+    const width = cellSize * patch.size;
+    const height = cellSize * patch.size;
+
+    // Draw base filled rectangle
+    ctx.fillStyle = patch.colors.secondary;
+    ctx.fillRect(x, y, width, height);
+
+    // Draw geometric pattern based on shape type
+    switch (patch.shape) {
+        case 'circles':
+            drawCirclePattern(ctx, x, y, width, height, patch);
+            break;
+        case 'squares':
+            drawSquarePattern(ctx, x, y, width, height, patch);
+            break;
+        case 'triangles':
+            drawTrianglePattern(ctx, x, y, width, height, patch);
+            break;
+        case 'hexagons':
+            drawHexagonPattern(ctx, x, y, width, height, patch);
+            break;
+    }
+
+    // Draw patch border (quilting stitch)
+    drawPatchBorder(ctx, x, y, width, height, patch.colors.accent);
+}
+
+/**
+ * Draw circular pattern (for trains)
+ */
+function drawCirclePattern(ctx, x, y, width, height, patch) {
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    const maxRadius = Math.min(width, height) / 2 - 10;
+
+    // Determine number of circles based on stops
+    const circleCount = Math.min(Math.max(3, Math.floor(patch.stops / 2)), 8);
+
+    for (let i = 0; i < circleCount; i++) {
+        const radius = maxRadius * ((i + 1) / circleCount);
+        const opacity = 0.3 + (0.5 * (i / circleCount));
+
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = patch.colors.primary;
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = opacity;
+        ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1.0;
+
+    // Fill center
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
+    ctx.fillStyle = patch.colors.primary;
+    ctx.fill();
+}
+
+/**
+ * Draw square grid pattern (for buses)
+ */
+function drawSquarePattern(ctx, x, y, width, height, patch) {
+    const gridCount = Math.max(2, Math.min(5, Math.floor(patch.stops / 2)));
+    const squareSize = Math.min(width, height) / gridCount;
+
+    for (let row = 0; row < gridCount; row++) {
+        for (let col = 0; col < gridCount; col++) {
+            const sx = x + col * squareSize;
+            const sy = y + row * squareSize;
+
+            // Checkerboard pattern
+            const isDark = (row + col) % 2 === 0;
+            ctx.fillStyle = isDark ? patch.colors.primary : patch.colors.secondary;
+            ctx.fillRect(sx + 2, sy + 2, squareSize - 4, squareSize - 4);
+        }
+    }
+}
+
+/**
+ * Draw triangle pattern (for walking)
+ */
+function drawTrianglePattern(ctx, x, y, width, height, patch) {
+    const triangleCount = Math.max(3, Math.min(8, patch.stops));
+
+    for (let i = 0; i < triangleCount; i++) {
+        const angle = (Math.PI * 2 * i) / triangleCount;
+        const nextAngle = (Math.PI * 2 * (i + 1)) / triangleCount;
+
+        const centerX = x + width / 2;
+        const centerY = y + height / 2;
+        const radius = Math.min(width, height) / 2 - 10;
+
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(
+            centerX + Math.cos(angle) * radius,
+            centerY + Math.sin(angle) * radius
+        );
+        ctx.lineTo(
+            centerX + Math.cos(nextAngle) * radius,
+            centerY + Math.sin(nextAngle) * radius
+        );
+        ctx.closePath();
+
+        ctx.fillStyle = i % 2 === 0 ? patch.colors.primary : patch.colors.accent;
+        ctx.fill();
+    }
+}
+
+/**
+ * Draw hexagon pattern (for driving)
+ */
+function drawHexagonPattern(ctx, x, y, width, height, patch) {
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    const radius = Math.min(width, height) / 2 - 10;
+
+    // Draw main hexagon
+    drawHexagon(ctx, centerX, centerY, radius, patch.colors.primary, true);
+
+    // Draw inner hexagons
+    const innerCount = Math.max(1, Math.min(3, Math.floor(patch.stops / 3)));
+    for (let i = 1; i <= innerCount; i++) {
+        const innerRadius = radius * ((innerCount - i + 1) / (innerCount + 1));
+        const color = i % 2 === 0 ? patch.colors.accent : patch.colors.secondary;
+        drawHexagon(ctx, centerX, centerY, innerRadius, color, true);
+    }
+}
+
+/**
+ * Draw a hexagon
+ */
+function drawHexagon(ctx, centerX, centerY, radius, color, fill = true) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i - Math.PI / 2;
+        const pointX = centerX + radius * Math.cos(angle);
+        const pointY = centerY + radius * Math.sin(angle);
+
+        if (i === 0) {
+            ctx.moveTo(pointX, pointY);
+        } else {
+            ctx.lineTo(pointX, pointY);
+        }
+    }
+    ctx.closePath();
+
+    if (fill) {
+        ctx.fillStyle = color;
+        ctx.fill();
+    }
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+
+/**
+ * Draw border around a patch (quilting stitch effect)
+ */
+function drawPatchBorder(ctx, x, y, width, height, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 3]); // Dashed line for stitch effect
+    ctx.strokeRect(x + 1, y + 1, width - 2, height - 2);
+    ctx.setLineDash([]); // Reset
+}
+
+/**
+ * Draw outer border for entire quilt
+ */
+function drawQuiltBorder(ctx, size) {
+    const borderWidth = 15;
+    const borderColor = '#62361b'; // CTA brown for frame
+
+    // Outer frame
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = borderWidth;
+    ctx.strokeRect(borderWidth / 2, borderWidth / 2, size - borderWidth, size - borderWidth);
+
+    // Inner decorative line
+    ctx.strokeStyle = '#d4af37'; // Gold accent
+    ctx.lineWidth = 2;
+    ctx.strokeRect(borderWidth + 3, borderWidth + 3, size - 2 * borderWidth - 6, size - 2 * borderWidth - 6);
+}
+
+/**
+ * Add download button for saving quilt pattern
+ */
+function addDownloadButton(container, canvas) {
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.textAlign = 'center';
+    buttonContainer.style.marginTop = '1rem';
+
+    const downloadBtn = document.createElement('button');
+    downloadBtn.textContent = 'Download Pattern';
+    downloadBtn.className = 'secondary-btn';
+    downloadBtn.style.display = 'inline-block';
+    downloadBtn.style.padding = '0.75rem 1.5rem';
+    downloadBtn.style.fontSize = '0.9rem';
+
+    downloadBtn.addEventListener('click', () => {
+        // Convert canvas to blob and download
+        canvas.toBlob((blob) => {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `chicago-songline-quilt-${Date.now()}.png`;
+            link.click();
+            URL.revokeObjectURL(url);
+        });
+    });
+
+    buttonContainer.appendChild(downloadBtn);
+    container.appendChild(buttonContainer);
+}
+
+/**
+ * Color manipulation utilities for quilt pattern
+ */
+function lightenColor(hex, percent) {
+    const rgb = hexToRgb(hex);
+    if (!rgb) return hex;
+
+    const r = Math.min(255, rgb.r + Math.round((255 - rgb.r) * percent / 100));
+    const g = Math.min(255, rgb.g + Math.round((255 - rgb.g) * percent / 100));
+    const b = Math.min(255, rgb.b + Math.round((255 - rgb.b) * percent / 100));
+
+    return rgbToHex(r, g, b);
+}
+
+function darkenColorQuilt(hex, percent) {
+    const rgb = hexToRgb(hex);
+    if (!rgb) return hex;
+
+    const r = Math.max(0, rgb.r - Math.round(rgb.r * percent / 100));
+    const g = Math.max(0, rgb.g - Math.round(rgb.g * percent / 100));
+    const b = Math.max(0, rgb.b - Math.round(rgb.b * percent / 100));
+
+    return rgbToHex(r, g, b);
+}
+
+function hexToRgb(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16)
+    } : null;
+}
+
+function rgbToHex(r, g, b) {
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+/**
+ * Integrate quilt generation with route processing
+ * Call this after route segments are parsed
+ */
+window.generateQuilt = generateQuilt;

@@ -1,0 +1,17 @@
+# API keys (local development)
+config.js
+
+# macOS
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Documentation build artifacts
+docs/_build/
